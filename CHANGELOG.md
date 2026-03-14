@@ -1,6 +1,6 @@
 # InDE MVP Changelog
 
-## [4.1.0] — 2026-03-XX "The Momentum Engine"
+## [4.1.0] — 2026-03-14 "The Momentum Engine"
 
 ### Series
 InDE v4.x — Momentum Management. v4.1 introduces the Momentum Management
@@ -9,13 +9,79 @@ pursuit-specific, and dynamically adaptive to each innovator's conversational
 energy.
 
 ### Added
-[filled in at end of build]
+**Momentum Management Engine — app/momentum/**
+
+signal_collectors.py:
+- MomentumSignals dataclass: 4 dimensions (response_specificity, conversational_lean,
+  temporal_commitment, idea_ownership), each 0.0–1.0
+- ResponseSpecificityCollector: word count + precision/vagueness pattern scoring
+- ConversationalLeanCollector: forward energy vs. closure language detection
+- TemporalCommitmentCollector: future action reference detection
+- IdeaOwnershipCollector: possessive/active vs. distancing/passive framing
+- collect_signals(): unified entry point for all four collectors
+
+momentum_engine.py:
+- SessionMomentumState: live per-session state (turn_count, signal_history, composite_score, tier)
+- MomentumSnapshot: persistence dataclass for session exit
+- MomentumManagementEngine: per-session intelligence module
+  - process_turn(): signal extraction + rolling-window composite update
+  - Rolling window: 5 turns, recency-discounted (10% discount per position back)
+  - Composite weights: specificity 0.30, lean 0.25, commitment 0.25, ownership 0.20
+  - Tier thresholds: HIGH >=0.70, MEDIUM >=0.45, LOW >=0.25, CRITICAL >=0.0
+  - _build_context(): tier-differentiated coaching guidance for ODICM injection
+  - snapshot(): session exit capture
+
+bridge_library.py:
+- BRIDGE_LIBRARY: vision x 4 tiers, fear x 4 tiers, validation x 4 tiers, _fallback x 4 tiers
+- {idea_domain}, {idea_summary}, {user_name}, {persona} placeholders
+- All templates are questions (end with '?') — no methodology terminology
+
+bridge_selector.py:
+- BridgeSelector: replaces v4.0 random momentum_bridge_generator()
+- Tier-aware selection (HIGH tier -> advance bridges, CRITICAL tier -> reconnection bridges)
+- Pursuit context injection with graceful fallback for missing values
+- Recently-used deduplication (last 3 bridges)
+
+momentum_persistence.py:
+- MomentumPersistence: MongoDB persistence service
+- save_snapshot() -> momentum_snapshots collection (90-day TTL index)
+- contribute_iml_pattern() -> iml_patterns collection (momentum_trajectory type)
+- get_momentum_summary() -> per-pursuit health aggregation
+
+### Changed
+**ODICM Turn Pipeline:**
+- MME instantiated at session creation, snapshotted at session end
+- process_turn() called on every innovator message
+- COACHING TONE GUIDANCE block prepended to ODICM system prompt each turn
+- Artifact completion bridge upgraded: BridgeSelector replaces random selection
+- Bridge now momentum-tier-aware and pursuit-context-parameterized
+
+**Coaching Convergence Protocol:**
+- check_convergence() accepts optional momentum_context
+- HIGH tier: convergence threshold lowered by 0.05
+- LOW tier: threshold raised by 0.08 / CRITICAL: raised by 0.15
+- Backward compatible — no change when momentum_context is None
+
+**Admin Telemetry (DiagnosticsAggregator):**
+- momentum_health section added: total_sessions, avg_momentum_score,
+  tier_distribution, bridge_delivery_rate, bridge_response_rate,
+  post_vision_exit_rate (the primary v4.x success metric)
 
 ### Architecture
+- New collection: momentum_snapshots (90-day TTL, indexed by pursuit_id, gii_id)
+- New IML pattern type: momentum_trajectory (written at pursuit terminal states)
 - GitHub: https://github.com/Dapman/InDE_4_1 (fresh history from v4.0.0 baseline)
 - Deployment: Local development only
 - v3.16.0 beta testing continues unaffected on InDEVerse-1
 - InDE_4 (v4.0.0) preserved at ~/InDE_4 — not modified
+
+### What Claude Code Must NOT Change
+- Display Label Registry and all v4.0 language changes (complete — do not touch)
+- Navigation labels, onboarding flow copy (complete from v4.0)
+- 5-container Docker architecture
+- All v3.16 / v4.0 API contracts
+- IKF, federation, GII, RBAC, audit logging
+- Any active Digital Ocean configuration or v3.16 deployment
 
 ---
 
