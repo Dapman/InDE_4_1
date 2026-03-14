@@ -200,7 +200,7 @@ export default function ForgotPasswordPage() {
         </div>
 
         <p className="text-caption text-zinc-600 text-center mt-6">
-          InDE v4.0.0
+          InDE v4.1.0
         </p>
       </div>
     </div>

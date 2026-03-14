@@ -1,5 +1,24 @@
 # InDE MVP Changelog
 
+## [4.1.0] — 2026-03-XX "The Momentum Engine"
+
+### Series
+InDE v4.x — Momentum Management. v4.1 introduces the Momentum Management
+Engine (MME) — the intelligence layer that makes the v4.0 bridge context-aware,
+pursuit-specific, and dynamically adaptive to each innovator's conversational
+energy.
+
+### Added
+[filled in at end of build]
+
+### Architecture
+- GitHub: https://github.com/Dapman/InDE_4_1 (fresh history from v4.0.0 baseline)
+- Deployment: Local development only
+- v3.16.0 beta testing continues unaffected on InDEVerse-1
+- InDE_4 (v4.0.0) preserved at ~/InDE_4 — not modified
+
+---
+
 ## [4.0.0] — 2026-03-14 "The Coherence Build"
 
 ### Series
