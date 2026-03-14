@@ -336,6 +336,7 @@ Remember: You're helping them discover their own insights, not telling them what
                                    maturity_context: Dict = None,
                                    crisis_context: Dict = None,
                                    ikf_context: Dict = None,
+                                   momentum_context: Dict = None,
                                    preferred_provider: str = "auto") -> str:
         """
         Generate coaching response with optional intervention.
@@ -364,6 +365,7 @@ Remember: You're helping them discover their own insights, not telling them what
             maturity_context: v3.1 - Innovator maturity level and coaching style
             crisis_context: v3.1 - Active crisis mode info (optional)
             ikf_context: v3.5.2 - IKF contribution context (optional)
+            momentum_context: v4.1 - MME momentum state (optional)
 
         Returns:
             Coaching response text
@@ -603,6 +605,23 @@ IKF Context (Innovation Knowledge Fabric):
 IKF Context: Connected to federation - relevant cross-organizational insights available.
 """
 
+        # v4.1: Add momentum context guidance (MME)
+        momentum_guidance = ""
+        if momentum_context:
+            coaching_guidance = momentum_context.get("coaching_guidance", "")
+            turn_count = momentum_context.get("turn_count", 0)
+            bridge_delivered = momentum_context.get("bridge_delivered", False)
+
+            if coaching_guidance:
+                momentum_guidance = f"""
+[COACHING TONE GUIDANCE — INTERNAL — DO NOT REPEAT TO INNOVATOR]
+{coaching_guidance}
+
+Turn count this session: {turn_count}
+Bridge already delivered this session: {bridge_delivered}
+[END COACHING TONE GUIDANCE]
+"""
+
         # Get completeness values
         completeness = pursuit_context.get("completeness", {})
 
@@ -615,7 +634,7 @@ IKF Context: Connected to federation - relevant cross-organizational insights av
             intervention_instruction=intervention_instruction,
             conversation_history=history_str,
             user_message=user_message,
-            additional_guidance=additional_guidance + teleological_guidance + question_guidance + health_zone_guidance + portfolio_guidance + maturity_guidance + crisis_guidance + ikf_guidance
+            additional_guidance=momentum_guidance + additional_guidance + teleological_guidance + question_guidance + health_zone_guidance + portfolio_guidance + maturity_guidance + crisis_guidance + ikf_guidance
         )
 
         # v3.9: Apply quality tier-aware calibration

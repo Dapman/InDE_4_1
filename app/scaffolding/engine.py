@@ -139,8 +139,18 @@ class ScaffoldingEngine:
         # v3.5.2: IKF Pattern Context import
         from scaffolding.ikf_pattern_context import build_ikf_coaching_context
 
+        # v4.1: Momentum Management Engine import
+        from momentum import MomentumManagementEngine
+        from momentum.bridge_selector import BridgeSelector
+        from momentum.momentum_persistence import MomentumPersistence
+
         # Store for later use
         self._build_ikf_coaching_context = build_ikf_coaching_context
+
+        # v4.1: Store MME classes for lazy instantiation
+        self._MomentumManagementEngine = MomentumManagementEngine
+        self._BridgeSelector = BridgeSelector
+        self._MomentumPersistence = MomentumPersistence
 
         # Initialize components
         self.intent_detector = IntentDetector(llm_interface, database)
@@ -255,6 +265,9 @@ class ScaffoldingEngine:
         # v3.6.1: Track active scenario exploration per pursuit
         self._scenario_exploration_active = {}
 
+        # v4.1: Track active MME sessions per pursuit
+        self._mme_sessions = {}
+
     # =========================================================================
     # v3.1: User Management
     # =========================================================================
@@ -286,6 +299,60 @@ class ScaffoldingEngine:
     def get_llm_preference(self) -> str:
         """v3.9: Get the user's LLM provider preference."""
         return getattr(self, '_llm_preference', 'auto')
+
+    # =========================================================================
+    # v4.1: Momentum Management Engine Session Lifecycle
+    # =========================================================================
+
+    def _get_or_create_mme(self, pursuit_id: str, user_id: str) -> Optional[object]:
+        """
+        Get or create a Momentum Management Engine instance for a pursuit.
+
+        MME instances are per-pursuit, not per-request. They persist in memory
+        for the duration of a session and are snapshotted to MongoDB on session end.
+
+        Args:
+            pursuit_id: The pursuit ID
+            user_id: The user's GII (hashed)
+
+        Returns:
+            MomentumManagementEngine instance, or None if pursuit_id is None
+        """
+        if not pursuit_id:
+            return None
+
+        if pursuit_id not in self._mme_sessions:
+            # Create new MME for this pursuit
+            import uuid
+            session_id = str(uuid.uuid4())
+            self._mme_sessions[pursuit_id] = self._MomentumManagementEngine(
+                session_id=session_id,
+                pursuit_id=pursuit_id,
+                gii_id=user_id
+            )
+            print(f"[Engine] v4.1: MME initialized for pursuit={pursuit_id}")
+
+        return self._mme_sessions[pursuit_id]
+
+    def _close_mme_session(self, pursuit_id: str, exit_reason: str = "natural"):
+        """
+        Close an MME session and persist the snapshot to MongoDB.
+
+        Args:
+            pursuit_id: The pursuit ID
+            exit_reason: Why the session ended ("natural", "timeout", "bridge_exit")
+        """
+        if pursuit_id and pursuit_id in self._mme_sessions:
+            mme = self._mme_sessions[pursuit_id]
+            snapshot = mme.snapshot(exit_reason=exit_reason)
+
+            # Persist to MongoDB
+            persistence = self._MomentumPersistence(self.db.db)
+            persistence.save_snapshot(snapshot)
+
+            # Remove from active sessions
+            del self._mme_sessions[pursuit_id]
+            print(f"[Engine] v4.1: MME session closed for pursuit={pursuit_id}")
 
     # =========================================================================
     # v2.7 FIX: Database-backed pending state management
@@ -555,6 +622,9 @@ class ScaffoldingEngine:
         retrospective_mode = False
         retrospective_progress = 0
 
+        # v4.1: Initialize momentum context (will be populated after processing)
+        momentum_context = None
+
         # v2.7 FIX: Check for pursuit recall/load commands FIRST
         recall_result = self._detect_pursuit_recall(message, user_id)
         if recall_result:
@@ -625,11 +695,29 @@ class ScaffoldingEngine:
                         # Build response with artifact (wrapped in markers for frontend detection)
                         pursuit = self.db.get_pursuit(current_pursuit_id)
 
-                        # v4.0: Use momentum bridge instead of session-close language
-                        from coaching.methodology_archetypes import CoachingLanguageAdapter
-                        archetype = pursuit.get("archetype", "lean_startup") if pursuit else "lean_startup"
-                        coaching_style = CoachingLanguageAdapter(archetype)
-                        bridge = coaching_style.get_artifact_completion_bridge(artifact_type)
+                        # v4.1: Use BridgeSelector with momentum-aware selection
+                        mme = self._get_or_create_mme(current_pursuit_id, user_id)
+                        if mme:
+                            momentum_context = mme.process_turn(message=message, artifact_active=artifact_type)
+                            momentum_tier = momentum_context.get("momentum_tier", "MEDIUM")
+                        else:
+                            momentum_tier = "MEDIUM"
+
+                        bridge_selector = self._BridgeSelector()
+                        bridge = bridge_selector.select(
+                            completed_artifact=artifact_type,
+                            momentum_tier=momentum_tier,
+                            pursuit_context={
+                                "idea_domain": pursuit.get("domain", "") if pursuit else "",
+                                "idea_summary": pursuit.get("description", "") if pursuit else "",
+                                "user_name": "",
+                                "persona": pursuit.get("primary_persona", "") if pursuit else "",
+                            }
+                        )
+
+                        # Notify MME that bridge was delivered
+                        if mme:
+                            mme.record_bridge_delivered()
 
                         response = f"Here's your {artifact_type} statement:\n\n[ARTIFACT:{artifact_type}]\n{artifact_content}\n[/ARTIFACT]\n\n{bridge}"
 
@@ -692,11 +780,29 @@ class ScaffoldingEngine:
                     # Build response with regenerated artifact (wrapped in markers)
                     pursuit = self.db.get_pursuit(current_pursuit_id)
 
-                    # v4.0: Use momentum bridge instead of session-close language
-                    from coaching.methodology_archetypes import CoachingLanguageAdapter
-                    archetype = pursuit.get("archetype", "lean_startup") if pursuit else "lean_startup"
-                    coaching_style = CoachingLanguageAdapter(archetype)
-                    bridge = coaching_style.get_artifact_completion_bridge(artifact_type)
+                    # v4.1: Use BridgeSelector with momentum-aware selection
+                    mme = self._get_or_create_mme(current_pursuit_id, user_id)
+                    if mme:
+                        momentum_context = mme.process_turn(message=message, artifact_active=artifact_type)
+                        momentum_tier = momentum_context.get("momentum_tier", "MEDIUM")
+                    else:
+                        momentum_tier = "MEDIUM"
+
+                    bridge_selector = self._BridgeSelector()
+                    bridge = bridge_selector.select(
+                        completed_artifact=artifact_type,
+                        momentum_tier=momentum_tier,
+                        pursuit_context={
+                            "idea_domain": pursuit.get("domain", "") if pursuit else "",
+                            "idea_summary": pursuit.get("description", "") if pursuit else "",
+                            "user_name": "",
+                            "persona": pursuit.get("primary_persona", "") if pursuit else "",
+                        }
+                    )
+
+                    # Notify MME that bridge was delivered
+                    if mme:
+                        mme.record_bridge_delivered()
 
                     response = (
                         f"Here's your updated {artifact_type} statement (v{version}):\n\n"
@@ -794,11 +900,29 @@ class ScaffoldingEngine:
                         # v3.7.1: Use appropriate label for artifact type
                         artifact_label = "data collection sheet" if explicit_artifact_type == "experiment" else f"{explicit_artifact_type} statement"
 
-                        # v4.0: Use momentum bridge instead of session-close language
-                        from coaching.methodology_archetypes import CoachingLanguageAdapter
-                        archetype = pursuit.get("archetype", "lean_startup") if pursuit else "lean_startup"
-                        coaching_style = CoachingLanguageAdapter(archetype)
-                        bridge = coaching_style.get_artifact_completion_bridge(explicit_artifact_type)
+                        # v4.1: Use BridgeSelector with momentum-aware selection
+                        mme = self._get_or_create_mme(current_pursuit_id, user_id)
+                        if mme:
+                            momentum_context = mme.process_turn(message=message, artifact_active=explicit_artifact_type)
+                            momentum_tier = momentum_context.get("momentum_tier", "MEDIUM")
+                        else:
+                            momentum_tier = "MEDIUM"
+
+                        bridge_selector = self._BridgeSelector()
+                        bridge = bridge_selector.select(
+                            completed_artifact=explicit_artifact_type,
+                            momentum_tier=momentum_tier,
+                            pursuit_context={
+                                "idea_domain": pursuit.get("domain", "") if pursuit else "",
+                                "idea_summary": pursuit.get("description", "") if pursuit else "",
+                                "user_name": "",
+                                "persona": pursuit.get("primary_persona", "") if pursuit else "",
+                            }
+                        )
+
+                        # Notify MME that bridge was delivered
+                        if mme:
+                            mme.record_bridge_delivered()
 
                         # v3.8: Wrap in artifact markers for popup display
                         response = f"Here's your {artifact_label}:\n\n[ARTIFACT:{explicit_artifact_type}]\n{artifact['content']}\n[/ARTIFACT]\n\n{bridge}"
@@ -1097,10 +1221,36 @@ class ScaffoldingEngine:
             print(f"[Engine] IKF context warning: {e}")
             # Non-fatal - coaching continues without IKF patterns
 
+        # v4.1: Process message through Momentum Management Engine
+        try:
+            mme = self._get_or_create_mme(current_pursuit_id, user_id)
+            if mme:
+                # Determine current artifact from pursuit context
+                artifact_active = None
+                if pursuit_context:
+                    completeness = pursuit_context.get("completeness", {})
+                    # Detect which artifact is being worked on based on completeness
+                    if completeness.get("vision", 0) < 1.0:
+                        artifact_active = "vision"
+                    elif completeness.get("fears", 0) < 1.0:
+                        artifact_active = "fear"
+                    elif completeness.get("hypothesis", 0) < 1.0:
+                        artifact_active = "validation"
+
+                momentum_context = mme.process_turn(
+                    message=message,
+                    artifact_active=artifact_active
+                )
+                print(f"[Engine] v4.1 Momentum: tier={momentum_context.get('momentum_tier')}, score={momentum_context.get('composite_score', 0):.2f}")
+        except Exception as e:
+            print(f"[Engine] v4.1 Momentum context warning: {e}")
+            # Non-fatal - coaching continues without momentum context
+
         # v2.3: Pass teleological context and selected question to LLM
         # v3.0.2: Also pass health context for zone-aware coaching
         # v3.5.2: Also pass IKF pattern context for global pattern attribution
         # v3.9: Also pass user's LLM provider preference
+        # v4.1: Also pass momentum context for tone guidance
         _t_start = time.time()
         response = self.llm.generate_coaching_response(
             user_message=message,
@@ -1111,6 +1261,7 @@ class ScaffoldingEngine:
             selected_question=selected_question,
             health_context=health_context,
             ikf_context=ikf_context,  # v3.5.2
+            momentum_context=momentum_context,  # v4.1
             preferred_provider=self.get_llm_preference()  # v3.9
         )
         print(f"[Engine] STEP 4 coaching response: {time.time() - _t_start:.2f}s")
