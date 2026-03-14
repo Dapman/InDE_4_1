@@ -2,6 +2,10 @@
 InDE MVP v3.4 - Coaching Convergence Protocol
 Four-phase convergence model with signal detection, criteria evaluation, and outcome capture.
 
+v4.1 Enhancement: Momentum-aware convergence threshold adjustment.
+High momentum → slightly easier to converge (innovator is engaged)
+Low momentum → harder to converge (re-ground first, don't close flagging session)
+
 Convergence Phases:
 1. EXPLORING - Open-ended discovery, no convergence signals
 2. CONSOLIDATING - Convergence detected, awaiting criteria
@@ -396,18 +400,43 @@ class ConvergenceStateMachine:
 
         return True
 
-    def check_convergence(self, composite_score: float) -> bool:
+    def check_convergence(
+        self,
+        composite_score: float,
+        momentum_context: Optional[Dict] = None
+    ) -> bool:
         """
         Check if convergence threshold is met.
 
+        v4.1 Enhancement: Momentum-aware threshold adjustment.
+        High momentum (HIGH tier) → slightly lower convergence threshold
+        (the innovator is engaged and ready to move — don't hold them back).
+        Low momentum (LOW/CRITICAL tier) → higher convergence threshold
+        (don't converge a flagging session — re-ground first).
+
         Args:
             composite_score: The weighted signal score
+            momentum_context: v4.1 - Optional momentum context from MME
 
         Returns:
             True if convergence should be triggered
         """
-        threshold = CONVERGENCE_CONFIG.get("threshold", 0.7)
-        return composite_score >= threshold
+        base_threshold = CONVERGENCE_CONFIG.get("threshold", 0.7)
+
+        # v4.1: Momentum-based threshold adjustment
+        threshold_adjustment = 0.0
+        if momentum_context:
+            tier = momentum_context.get("momentum_tier", "MEDIUM")
+            TIER_THRESHOLD_ADJUSTMENTS = {
+                "HIGH":     -0.05,   # Slightly easier to converge
+                "MEDIUM":    0.00,   # No adjustment
+                "LOW":      +0.08,   # Harder to converge — re-ground first
+                "CRITICAL": +0.15,   # Much harder — this session needs care
+            }
+            threshold_adjustment = TIER_THRESHOLD_ADJUSTMENTS.get(tier, 0.0)
+
+        effective_threshold = base_threshold + threshold_adjustment
+        return composite_score >= effective_threshold
 
     def add_criterion(self, criterion: TransitionCriterion):
         """Add a transition criterion."""
@@ -525,7 +554,8 @@ class ConvergenceOrchestrator:
         session_id: str,
         message: str,
         conversation_history: List[Dict],
-        session_start_time: datetime
+        session_start_time: datetime,
+        momentum_context: Optional[Dict] = None
     ) -> Dict[str, Any]:
         """
         Process a message through convergence detection.
@@ -535,6 +565,7 @@ class ConvergenceOrchestrator:
             message: The user's message
             conversation_history: Recent conversation turns
             session_start_time: When the session started
+            momentum_context: v4.1 - Optional momentum context from MME
 
         Returns:
             Dict with convergence state and any recommended actions
@@ -569,7 +600,8 @@ class ConvergenceOrchestrator:
 
         # Handle transitions based on current phase
         if machine.current_phase == ConvergencePhase.EXPLORING:
-            if machine.check_convergence(composite_score):
+            # v4.1: Pass momentum_context for momentum-aware threshold
+            if machine.check_convergence(composite_score, momentum_context):
                 if machine.transition_to(ConvergencePhase.CONSOLIDATING, "Signal threshold exceeded"):
                     result["transition_occurred"] = True
                     result["recommended_action"] = "confirm_convergence"
