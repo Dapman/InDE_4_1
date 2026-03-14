@@ -3,6 +3,7 @@ Diagnostics Aggregator
 Fan-out module that collects health metrics from multiple sources.
 
 v3.14: Operational Readiness
+v4.1: Momentum health metrics (MME telemetry)
 """
 
 import logging
@@ -51,6 +52,7 @@ class DiagnosticsAggregator:
             "error_counts": self._get_error_counts(),
             "innovator_stats": self._get_innovator_stats(),
             "onboarding_funnel": self._get_onboarding_funnel(),
+            "momentum_health": self._get_momentum_health(),  # v4.1
             "system_health": self._get_system_health(),
         }
 
@@ -198,6 +200,109 @@ class DiagnosticsAggregator:
         """Check license status (placeholder)."""
         # TODO: Integrate with actual license service
         return {"status": "healthy", "message": "License check not implemented"}
+
+    def _get_momentum_health(self, days: int = 7) -> dict:
+        """
+        v4.1: Get momentum health metrics from MME telemetry.
+
+        Aggregates momentum_snapshots collection data to provide:
+        - Session tier distribution (HIGH/MEDIUM/LOW/CRITICAL)
+        - Bridge delivery and response rates
+        - Post-vision exit rate (primary success metric)
+
+        Args:
+            days: Number of days to aggregate
+
+        Returns:
+            Momentum health summary dict
+        """
+        if self.db is None:
+            return {
+                "status": "unavailable",
+                "reason": "Database connection not provided"
+            }
+
+        try:
+            from datetime import timedelta
+            raw_db = self.db.db if hasattr(self.db, 'db') else self.db
+            since = datetime.now(timezone.utc) - timedelta(days=days)
+
+            # Aggregate momentum health across all sessions in period
+            pipeline = [
+                {"$match": {"recorded_at": {"$gte": since}}},
+                {"$group": {
+                    "_id": None,
+                    "total_sessions": {"$sum": 1},
+                    "avg_score": {"$avg": "$composite_score"},
+                    "high_tier_sessions": {
+                        "$sum": {"$cond": [{"$eq": ["$momentum_tier", "HIGH"]}, 1, 0]}
+                    },
+                    "medium_tier_sessions": {
+                        "$sum": {"$cond": [{"$eq": ["$momentum_tier", "MEDIUM"]}, 1, 0]}
+                    },
+                    "low_tier_sessions": {
+                        "$sum": {"$cond": [{"$eq": ["$momentum_tier", "LOW"]}, 1, 0]}
+                    },
+                    "critical_tier_sessions": {
+                        "$sum": {"$cond": [{"$eq": ["$momentum_tier", "CRITICAL"]}, 1, 0]}
+                    },
+                    "bridges_delivered": {
+                        "$sum": {"$cond": ["$bridge_delivered", 1, 0]}
+                    },
+                    "bridges_responded": {
+                        "$sum": {"$cond": ["$bridge_responded", 1, 0]}
+                    },
+                    "post_vision_exits": {
+                        "$sum": {"$cond": [{"$eq": ["$artifact_at_exit", "vision"]}, 1, 0]}
+                    },
+                }}
+            ]
+
+            agg_result = list(raw_db.momentum_snapshots.aggregate(pipeline))
+            m = agg_result[0] if agg_result else {}
+
+            total = m.get("total_sessions", 0)
+            bridges_delivered = m.get("bridges_delivered", 0)
+
+            if total == 0:
+                return {
+                    "period_days": days,
+                    "total_sessions": 0,
+                    "avg_momentum_score": None,
+                    "tier_distribution": {"HIGH": 0, "MEDIUM": 0, "LOW": 0, "CRITICAL": 0},
+                    "bridge_delivery_rate": None,
+                    "bridge_response_rate": None,
+                    "post_vision_exit_rate": None,
+                    "status": "no_data"
+                }
+
+            return {
+                "period_days": days,
+                "total_sessions": total,
+                "avg_momentum_score": round(m.get("avg_score", 0), 3),
+                "tier_distribution": {
+                    "HIGH": m.get("high_tier_sessions", 0),
+                    "MEDIUM": m.get("medium_tier_sessions", 0),
+                    "LOW": m.get("low_tier_sessions", 0),
+                    "CRITICAL": m.get("critical_tier_sessions", 0),
+                },
+                "bridge_delivery_rate": round(bridges_delivered / total, 3),
+                "bridge_response_rate": round(
+                    m.get("bridges_responded", 0) / max(1, bridges_delivered), 3
+                ) if bridges_delivered > 0 else None,
+                # The primary metric we are solving for in v4.x series:
+                "post_vision_exit_rate": round(
+                    m.get("post_vision_exits", 0) / total, 3
+                ),
+                "status": "ok"
+            }
+
+        except Exception as e:
+            logger.warning(f"Momentum health access failed: {e}")
+            return {
+                "status": "error",
+                "reason": str(e)
+            }
 
     def _get_recent_errors(self, limit: int = 20) -> list:
         """
